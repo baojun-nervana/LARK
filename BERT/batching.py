@@ -18,14 +18,26 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
+import math
+np.random.seed(0)
 
-
-def mask(batch_tokens, total_token_num, vocab_size, CLS=1, SEP=2, MASK=3):
+def mask(batch_tokens, total_token_num, vocab_size, num_buckets=1, max_seq_len=128, CLS=1, SEP=2, MASK=3):
     """
     Add mask for batch_tokens, return out, mask_label, mask_pos;
     Note: mask_pos responding the batch_tokens after padded;
     """
-    max_len = max([len(sent) for sent in batch_tokens])
+    ## Bucketing Changes
+
+    bin_width = max_seq_len/num_buckets
+    boundaries = np.linspace(bin_width, max_seq_len, num_buckets,dtype=np.int32).tolist()
+
+    max_len_actual = max(len(inst) for inst in batch_tokens)
+    if max_len_actual==max_seq_len:
+        max_len = max_seq_len
+    else:
+        max_len = int(boundaries[int(max_len_actual/bin_width)])
+
+    #max_len =  max([len(sent) for sent in batch_tokens])
     mask_label = []
     mask_pos = []
     prob_mask = np.random.rand(total_token_num)
@@ -69,9 +81,15 @@ def mask(batch_tokens, total_token_num, vocab_size, CLS=1, SEP=2, MASK=3):
                 sent[token_index] = MASK
                 mask_flag = True
                 mask_pos.append(sent_index * max_len + token_index)
+    actual_length = len(mask_label)
+    mask_softmax = [1]*len(mask_label) + [0]*(max_len-actual_length)
+    mask_label = mask_label+[0]*(max_len-len(mask_label))
+    mask_pos = mask_pos+[0]*(max_len-len(mask_pos))
+
     mask_label = np.array(mask_label).astype("int64").reshape([-1, 1])
     mask_pos = np.array(mask_pos).astype("int64").reshape([-1, 1])
-    return batch_tokens, mask_label, mask_pos
+    mask_softmax = np.array(mask_softmax).astype("int64").reshape([-1, 1])
+    return batch_tokens, mask_label, mask_pos, mask_softmax
 
 
 def prepare_batch_data(insts,
@@ -83,7 +101,9 @@ def prepare_batch_data(insts,
                        mask_id=None,
                        return_input_mask=True,
                        return_max_len=True,
-                       return_num_token=False):
+                       return_num_token=False,
+                       num_buckets = 1,
+                       max_seq_len = 128):
     """
     1. generate Tensor of data
     2. generate Tensor of position
@@ -94,7 +114,7 @@ def prepare_batch_data(insts,
     batch_sent_ids = [inst[1] for inst in insts]
     batch_pos_ids = [inst[2] for inst in insts]
     labels_list = []
-    # compatible with squad, whose example includes start/end positions, 
+    # compatible with squad, whose example includes start/end positions,
     # or unique id
 
     for i in range(3, len(insts[0]), 1):
@@ -104,10 +124,12 @@ def prepare_batch_data(insts,
 
     # First step: do mask without padding
     if mask_id >= 0:
-        out, mask_label, mask_pos = mask(
+        out, mask_label, mask_pos,mask_softmax = mask(
             batch_src_ids,
             total_token_num,
             vocab_size=voc_size,
+            num_buckets = num_buckets,
+            max_seq_len = max_seq_len,
             CLS=cls_id,
             SEP=sep_id,
             MASK=mask_id)
@@ -115,21 +137,21 @@ def prepare_batch_data(insts,
         out = batch_src_ids
     # Second step: padding
     src_id, self_input_mask = pad_batch_data(
-        out, pad_idx=pad_id, return_input_mask=True)
+        out, pad_idx=pad_id, return_input_mask=True, num_buckets = num_buckets, max_seq_len=max_seq_len)
     pos_id = pad_batch_data(
         batch_pos_ids,
         pad_idx=pad_id,
         return_pos=False,
-        return_input_mask=False)
+        return_input_mask=False, num_buckets = num_buckets, max_seq_len=max_seq_len )
     sent_id = pad_batch_data(
         batch_sent_ids,
         pad_idx=pad_id,
         return_pos=False,
-        return_input_mask=False)
+        return_input_mask=False, num_buckets = num_buckets, max_seq_len = max_seq_len )
 
     if mask_id >= 0:
         return_list = [
-            src_id, pos_id, sent_id, self_input_mask, mask_label, mask_pos
+            src_id, pos_id, sent_id, self_input_mask, mask_label, mask_pos,mask_softmax
         ] + labels_list
     else:
         return_list = [src_id, pos_id, sent_id, self_input_mask] + labels_list
@@ -142,13 +164,26 @@ def pad_batch_data(insts,
                    return_pos=False,
                    return_input_mask=False,
                    return_max_len=False,
-                   return_num_token=False):
+                   return_num_token=False,
+                   num_buckets = 1,
+                   max_seq_len=128):
     """
     Pad the instances to the max sequence length in batch, and generate the
     corresponding position data and input mask.
     """
     return_list = []
-    max_len = max(len(inst) for inst in insts)
+
+    ## Bucketing Changes
+
+    bin_width = max_seq_len/num_buckets
+    boundaries = np.linspace(bin_width, max_seq_len, num_buckets,dtype=np.int32).tolist()
+    max_len_actual = max(len(inst) for inst in insts)
+    if max_len_actual == max_seq_len:
+        max_len = max_seq_len
+    else:
+        max_len = int(boundaries[int(max_len_actual/bin_width)])
+
+    #max_len = max(len(inst) for inst in insts)
     # Any token included in dict can be used to pad, since the paddings' loss
     # will be masked out by weights and make no effect on parameter gradients.
 

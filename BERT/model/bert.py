@@ -73,7 +73,7 @@ class BertModel(object):
         self._sent_emb_name = "sent_embedding"
         self._dtype = "float16" if use_fp16 else "float32"
 
-        # Initialize all weigths by truncated normal initializer, and all biases 
+        # Initialize all weigths by truncated normal initializer, and all biases
         # will be initialized by constant zero by default.
         self._param_initializer = fluid.initializer.TruncatedNormal(
             scale=config['initializer_range'])
@@ -115,7 +115,7 @@ class BertModel(object):
         self_attn_mask = fluid.layers.matmul(
             x=input_mask, y=input_mask, transpose_y=True)
         self_attn_mask = fluid.layers.scale(
-            x=self_attn_mask, scale=10000.0, bias=-1.0, bias_after_scale=False)
+            x=self_attn_mask, scale=1000.0, bias=-1.0, bias_after_scale=False)
         n_head_self_attn_mask = fluid.layers.stack(
             x=[self_attn_mask] * self._n_head, axis=1)
         n_head_self_attn_mask.stop_gradient = True
@@ -155,7 +155,7 @@ class BertModel(object):
             bias_attr="pooled_fc.b_0")
         return next_sent_feat
 
-    def get_pretraining_output(self, mask_label, mask_pos, labels):
+    def get_pretraining_output(self, mask_label, mask_pos, mask_softmax, labels): #
         """Get the loss & accuracy for pretraining"""
 
         mask_pos = fluid.layers.cast(x=mask_pos, dtype='int32')
@@ -176,7 +176,7 @@ class BertModel(object):
                 name='mask_lm_trans_fc.w_0',
                 initializer=self._param_initializer),
             bias_attr=fluid.ParamAttr(name='mask_lm_trans_fc.b_0'))
-        # transform: layer norm 
+        # transform: layer norm
         mask_trans_feat = pre_process_layer(
             mask_trans_feat, 'n', name='mask_lm_trans')
 
@@ -203,10 +203,24 @@ class BertModel(object):
                                          initializer=self._param_initializer),
                                      bias_attr=mask_lm_out_bias_attr)
 
+
         mask_lm_loss = fluid.layers.softmax_with_cross_entropy(
             logits=fc_out, label=mask_label)
-        mean_mask_lm_loss = fluid.layers.mean(mask_lm_loss)
+        label_weights = fluid.layers.reshape(mask_softmax,[-1])
 
+        mean_mask_lm_loss = fluid.layers.reduce_sum(mask_lm_loss*mask_softmax)/fluid.layers.reduce_sum(label_weights)
+        #mean_mask_lm_loss = fluid.layers.mean(mask_lm_loss)
+        '''
+        #label_ids = fluid.layers.reshape(mask_label,[-1,1])
+
+        #log_softmax = fluid.layers.log(fluid.layers.softmax(fc_out))
+        #one_hot_labels = fluid.layers.one_hot(label_ids, self._voc_size)
+        #per_example_loss = -1*fluid.layers.reduce_sum(log_softmax * one_hot_labels, dim=-1)
+
+        #numerator = fluid.layers.reduce_sum(label_weights * per_example_loss)
+        #denominator =  fluid.layers.reduce_sum(label_weights)
+        #mean_mask_lm_loss = numerator/denominator# fluid.layers.reciprocal(denominator)
+        '''
         next_sent_fc_out = fluid.layers.fc(
             input=next_sent_feat,
             size=2,

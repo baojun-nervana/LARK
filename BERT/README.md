@@ -1,3 +1,50 @@
+# Running BERT with Bucketing & Static Shapes
+
+1. git clone https://github.com/NervanaSystems/ngraph-models.git 
+
+2. git checkout sharath/paddlepaddle_bert
+
+3. cd paddle_scripts/BERT/
+
+4. Command Lines and Environment Variables
+
+```
+SAVE_STEPS=10000
+BATCH_SIZE=8
+LR_RATE=1e-4
+WEIGHT_DECAY=0.01
+MAX_LEN=512
+TRAIN_DATA_DIR=data/train
+VALIDATION_DATA_DIR=data/validation
+CONFIG_PATH=data/demo_config/bert_config.json
+VOCAB_PATH=data/demo_config/vocab.txt
+
+```
+```
+python -u ./train.py ${is_distributed}\
+        --use_cuda true\
+        --weight_sharing true\
+        --batch_size ${BATCH_SIZE} \
+        --data_dir ${TRAIN_DATA_DIR} \
+        --validation_set_dir ${VALIDATION_DATA_DIR} \
+        --bert_config_path ${CONFIG_PATH} \
+        --vocab_path ${VOCAB_PATH} \
+        --generate_neg_sample true\
+        --checkpoints ./output \
+        --save_steps ${SAVE_STEPS} \
+        --learning_rate ${LR_RATE} \
+        --weight_decay ${WEIGHT_DECAY:-0} \
+        --max_seq_len ${MAX_LEN} \
+        --skip_steps 1 \
+        --validation_steps 1000 \
+        --num_iteration_per_drop_scope 10 \
+        --use_fp16 false \
+        --loss_scaling 8.0 \
+        --in_tokens=False \
+        --num_buckets=1
+```
+You can change the --num_buckets argument to increase the number of discrete dynamic shapes and improve performance. 
+
 # BERT on PaddlePaddle
 
 [BERT](https://arxiv.org/abs/1810.04805) 是一个迁移能力很强的通用语义表示模型， 以 [Transformer](https://arxiv.org/abs/1706.03762) 为网络基本组件，以双向 `Masked Language Model`  

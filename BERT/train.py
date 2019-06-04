@@ -25,6 +25,7 @@ import multiprocessing
 
 import paddle
 import paddle.fluid as fluid
+import paddle.fluid.profiler as profiler
 
 from reader.pretraining import DataReader
 from model.bert import BertModel, BertConfig
@@ -44,7 +45,7 @@ model_g.add_arg("generate_neg_sample",   bool, True,                         "If
 train_g = ArgumentGroup(parser, "training", "training options.")
 train_g.add_arg("epoch",             int,    100,     "Number of epoches for training.")
 train_g.add_arg("learning_rate",     float,  0.0001,  "Learning rate used to train with warmup.")
-train_g.add_arg("lr_scheduler",      str,    "linear_warmup_decay",
+train_g.add_arg("lr_scheduler",      str,    "noam_decay",
                 "scheduler of learning rate.", choices=['linear_warmup_decay', 'noam_decay'])
 train_g.add_arg("weight_decay",      float,  0.01,    "Weight decay rate for L2 regularizer.")
 train_g.add_arg("num_train_steps",   int,    1000000, "Total steps to perform pretraining.")
@@ -65,6 +66,9 @@ data_g.add_arg("validation_set_dir",  str,  "./data/validation/",  "Path to vali
 data_g.add_arg("test_set_dir",        str,  None,                  "Path to test data.")
 data_g.add_arg("vocab_path",          str,  "./config/vocab.txt",  "Vocabulary path.")
 data_g.add_arg("max_seq_len",         int,  512,                   "Tokens' number of the longest seqence allowed.")
+
+data_g.add_arg("num_buckets",         int,  1,                   "Tokens' number of the longest seqence allowed.")
+
 data_g.add_arg("batch_size",          int,  8192,
                "The total number of examples in one batch for training, see also --in_tokens.")
 data_g.add_arg("in_tokens",           bool, True,
@@ -77,27 +81,28 @@ run_type_g.add_arg("use_cuda",                     bool,   True,   "If set, use 
 run_type_g.add_arg("use_fast_executor",            bool,   False,  "If set, use fast parallel executor (in experiment).")
 run_type_g.add_arg("num_iteration_per_drop_scope", int,    1,      "Ihe iteration intervals to clean up temporary variables.")
 run_type_g.add_arg("do_test",                      bool,   False,  "Whether to perform evaluation on test data set.")
+run_type_g.add_arg("do_profile",                   bool,   False,  "Whether to perform profiling during training. Epoch set to 1 for profiling.")
 
 args = parser.parse_args()
 # yapf: enable.
 
+np.random.seed(0)
 
 def create_model(pyreader_name, bert_config):
     pyreader = fluid.layers.py_reader(
         capacity=70,
         shapes=[[-1, args.max_seq_len, 1], [-1, args.max_seq_len, 1],
                 [-1, args.max_seq_len, 1],
-                [-1, args.max_seq_len, 1], [-1, 1], [-1, 1],
+                [-1, args.max_seq_len, 1], [-1, 1], [-1, 1], [-1, 1],
                 [-1, 1]],
         dtypes=[
-            'int64', 'int64', 'int64', 'float32', 'int64', 'int64', 'int64'
+            'int64', 'int64', 'int64', 'float32', 'int64', 'int64', 'int64','int64'
         ],
-        lod_levels=[0, 0, 0, 0, 0, 0, 0],
+        lod_levels=[0, 0, 0, 0, 0, 0, 0,0],
         name=pyreader_name,
         use_double_buffer=True)
 
-    (src_ids, pos_ids, sent_ids, input_mask, mask_label, mask_pos, labels) = fluid.layers.read_file(pyreader)
-
+    (src_ids, pos_ids, sent_ids, input_mask, mask_label, mask_pos, mask_softmax,labels) = fluid.layers.read_file(pyreader) # mask_softmax,
     bert = BertModel(
         src_ids=src_ids,
         position_ids=pos_ids,
@@ -108,7 +113,7 @@ def create_model(pyreader_name, bert_config):
         use_fp16=args.use_fp16)
 
     next_sent_acc, mask_lm_loss, total_loss = bert.get_pretraining_output(
-        mask_label, mask_pos, labels)
+        mask_label, mask_pos,  mask_softmax, labels)
 
     if args.use_fp16 and args.loss_scaling > 1.0:
         total_loss *= args.loss_scaling
@@ -133,7 +138,8 @@ def predict_wrapper(args,
         shuffle_files=False,
         epoch=1,
         max_seq_len=args.max_seq_len,
-        is_test=True)
+        is_test=True,
+        num_buckets = args.num_buckets)
 
     if args.do_test:
         assert args.init_checkpoint is not None, "[FATAL] Please use --init_checkpoint '/path/to/checkpoints' \
@@ -214,6 +220,8 @@ def train(args):
     train_program = fluid.Program()
     startup_prog = fluid.Program()
     with fluid.program_guard(train_program, startup_prog):
+        train_program.random_seed = 100
+        startup_prog.random_seed = 100
         with fluid.unique_name.guard():
             train_pyreader, next_sent_acc, mask_lm_loss, total_loss = create_model(
                 pyreader_name='train_reader', bert_config=bert_config)
@@ -297,7 +305,6 @@ def train(args):
 
     if args.init_checkpoint and args.init_checkpoint != "":
         init_checkpoint(exe, args.init_checkpoint, train_program, args.use_fp16)
-
     data_reader = DataReader(
         data_dir=args.data_dir,
         batch_size=args.batch_size,
@@ -306,20 +313,22 @@ def train(args):
         voc_size=bert_config['vocab_size'],
         epoch=args.epoch,
         max_seq_len=args.max_seq_len,
-        generate_neg_sample=args.generate_neg_sample)
+        generate_neg_sample=args.generate_neg_sample,
+        num_buckets = args.num_buckets)
+        #shuffle_files=False)#change
 
     exec_strategy = fluid.ExecutionStrategy()
     exec_strategy.use_experimental_executor = args.use_fast_executor
     exec_strategy.num_threads = dev_count
     exec_strategy.num_iteration_per_drop_scope = args.num_iteration_per_drop_scope
 
-    train_exe = fluid.ParallelExecutor(
-        use_cuda=args.use_cuda,
-        loss_name=total_loss.name,
-        exec_strategy=exec_strategy,
-        main_program=train_program,
-        num_trainers=nccl2_num_trainers,
-        trainer_id=nccl2_trainer_id)
+    #train_exe = fluid.ParallelExecutor(
+    #    use_cuda=args.use_cuda,
+    #    loss_name=total_loss.name,
+    #    exec_strategy=exec_strategy,
+    #    main_program=train_program,
+    #    num_trainers=nccl2_num_trainers,
+    #    trainer_id=nccl2_trainer_id)
 
     if args.validation_set_dir and args.validation_set_dir != "":
         predict = predict_wrapper(
@@ -338,6 +347,7 @@ def train(args):
     cost = []
     lm_cost = []
     acc = []
+    #print(train_program)
     time_begin = time.time()
     while steps < args.num_train_steps:
         try:
@@ -345,17 +355,17 @@ def train(args):
             skip_steps = args.skip_steps * nccl2_num_trainers
 
             if nccl2_trainer_id != 0:
-                train_exe.run(fetch_list=[])
+                exe.run(fetch_list=[], program=train_program)
                 continue
 
             if steps % skip_steps != 0:
-                train_exe.run(fetch_list=[])
+                exe.run(fetch_list=[], program=train_program)
             else:
-                each_next_acc, each_mask_lm_cost, each_total_cost, np_lr = train_exe.run(
+                each_next_acc, each_mask_lm_cost, each_total_cost, np_lr = exe.run(
                     fetch_list=[
                         next_sent_acc.name, mask_lm_loss.name, total_loss.name,
                         scheduled_lr.name
-                    ])
+                    ], program=train_program)
                 acc.extend(each_next_acc)
                 lm_cost.extend(each_mask_lm_cost)
                 cost.extend(each_total_cost)
@@ -404,4 +414,8 @@ if __name__ == '__main__':
     if args.do_test:
         test(args)
     else:
-        train(args)
+        if args.do_profile:
+            with profiler.profiler('CPU', sorted_key = 'total') as cpuprof:
+                train(args)
+        else:
+            train(args)

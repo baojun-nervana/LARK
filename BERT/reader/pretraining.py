@@ -29,8 +29,7 @@ import paddle
 import paddle.fluid as fluid
 
 from batching import prepare_batch_data
-
-
+np.random.seed(0)
 class DataReader(object):
     def __init__(self,
                  data_dir,
@@ -42,7 +41,8 @@ class DataReader(object):
                  epoch=100,
                  voc_size=0,
                  is_test=False,
-                 generate_neg_sample=False):
+                 generate_neg_sample=False,
+                 num_buckets=1):
 
         self.vocab = self.load_vocab(vocab_path)
         self.data_dir = data_dir
@@ -62,6 +62,9 @@ class DataReader(object):
         self.mask_id = self.vocab["[MASK]"]
         self.is_test = is_test
         self.generate_neg_sample = generate_neg_sample
+        self.num_buckets = num_buckets
+        np.random.seed(0)
+
         if self.in_tokens:
             assert self.batch_size >= self.max_seq_len, "The number of " \
                    "tokens in batch should not be smaller than max seq length."
@@ -78,7 +81,7 @@ class DataReader(object):
     def parse_line(self, line, max_seq_len=512):
         """ parse one line to token_ids, sentence_ids, pos_ids, label
         """
-        line = line.strip().decode().split(";")
+        line = line.strip().split(";")
         assert len(line) == 4, "One sample must have 4 fields!"
         (token_ids, sent_ids, pos_ids, label) = line
         token_ids = [int(token) for token in token_ids.split(" ")]
@@ -141,7 +144,7 @@ class DataReader(object):
 
             Args:
                 pos_samples: list of positive samples
-            
+
             Returns:
                 neg_samples: list of negtive samples
         """
@@ -176,7 +179,7 @@ class DataReader(object):
     def mixin_negtive_samples(self, pos_sample_generator, buffer=1000):
         """ 1. generate negtive samples by randomly group sentence_1 and sentence_2 of positive samples
             2. combine negtive samples and positive samples
-            
+
             Args:
                 pos_sample_generator: a generator producing a parsed positive sample, which is a list: [token_ids, sent_ids, pos_ids, 1]
 
@@ -280,7 +283,9 @@ class DataReader(object):
                     mask_id=self.mask_id,
                     return_input_mask=True,
                     return_max_len=False,
-                    return_num_token=False)
+                    return_num_token=False,
+                    num_buckets = self.num_buckets,
+                    max_seq_len = self.max_seq_len)
 
         return wrapper
 

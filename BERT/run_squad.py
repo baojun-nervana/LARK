@@ -144,6 +144,9 @@ def create_model(pyreader_name, bert_config, is_training=False):
     batch_ones = fluid.layers.fill_constant_batch_size_like(
         input=start_logits, dtype='int64', shape=[1], value=1)
     num_seqs = fluid.layers.reduce_sum(input=batch_ones)
+    num_seqs.persistable = True
+    start_logits.persistable = True
+    end_logits.persistable = True
 
     if is_training:
 
@@ -158,6 +161,7 @@ def create_model(pyreader_name, bert_config, is_training=False):
         total_loss = (start_loss + end_loss) / 2.0
         if args.use_fp16 and args.loss_scaling > 1.0:
             total_loss = total_loss * args.loss_scaling
+        total_loss.persistable = True
 
         return pyreader, total_loss, num_seqs
     else:
@@ -241,8 +245,7 @@ def train(args):
             data_path=args.train_file,
             batch_size=args.batch_size,
             phase='train',
-            shuffle=True,
-            dev_count=dev_count,
+            shuffle=False,
             version_2_with_negative=args.version_2_with_negative,
             epoch=args.epoch)
 
@@ -279,7 +282,7 @@ def train(args):
                     use_fp16=args.use_fp16,
                     loss_scaling=args.loss_scaling)
 
-                fluid.memory_optimize(train_program, skip_opt_set=[loss.name, num_seqs.name])
+                fluid.memory_optimize(train_program)
 
         if args.verbose:
             if args.in_tokens:
@@ -301,8 +304,7 @@ def train(args):
                     bert_config=bert_config,
                     is_training=False)
 
-                fluid.memory_optimize(test_prog, skip_opt_set=[unique_ids.name,
-                    start_logits.name, end_logits.name, num_seqs.name])
+                fluid.memory_optimize(test_prog)
 
         test_prog = test_prog.clone(for_test=True)
 
@@ -396,7 +398,7 @@ def train(args):
                     total_cost, total_num_seqs = [], []
                     time_begin = time.time()
 
-                if steps % args.save_steps == 0 or steps == max_train_steps:
+                if steps % args.save_steps == 0:
                     save_path = os.path.join(args.checkpoints,
                                              "step_" + str(steps))
                     fluid.io.save_persistables(exe, save_path, train_program)
@@ -414,7 +416,6 @@ def train(args):
                 batch_size=args.batch_size,
                 phase='predict',
                 shuffle=False,
-                dev_count=1,
                 epoch=1))
 
         predict(exe, test_prog, test_pyreader, [

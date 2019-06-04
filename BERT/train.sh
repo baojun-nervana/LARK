@@ -23,10 +23,10 @@ esac
 
 # pretrain config
 SAVE_STEPS=10000
-BATCH_SIZE=4096
+BATCH_SIZE=8
 LR_RATE=1e-4
 WEIGHT_DECAY=0.01
-MAX_LEN=512
+MAX_LEN=128
 TRAIN_DATA_DIR=data/train
 VALIDATION_DATA_DIR=data/validation
 CONFIG_PATH=data/demo_config/bert_config.json
@@ -34,7 +34,7 @@ VOCAB_PATH=data/demo_config/vocab.txt
 
 # Change your train arguments:
 python -u ./train.py ${is_distributed}\
-        --use_cuda true\
+        --use_cuda false\
         --weight_sharing true\
         --batch_size ${BATCH_SIZE} \
         --data_dir ${TRAIN_DATA_DIR} \
@@ -51,5 +51,7 @@ python -u ./train.py ${is_distributed}\
         --validation_steps 1000 \
         --num_iteration_per_drop_scope 10 \
         --use_fp16 false \
-        --loss_scaling 8.0
-       
+        --loss_scaling 8.0 \
+	--in_tokens=False \
+	--num_buckets=1 \
+        --do_profile=False
